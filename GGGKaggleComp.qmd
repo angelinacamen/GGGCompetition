@@ -1,0 +1,295 @@
+---
+title: "GGGcomp"
+format: html
+editor: visual
+---
+
+## Load packages and read in data
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(vroom)
+library(patchwork)
+
+gggTrain <- vroom("~/Downloads/GGGCompetition/ghouls-goblins-and-ghosts-boo/train.csv")
+gggTest <- vroom("~/Downloads/GGGCompetition/ghouls-goblins-and-ghosts-boo/test.csv")
+gggSample <- vroom("~/Downloads/GGGCompetition/ghouls-goblins-and-ghosts-boo/sample_submission.csv")
+
+```
+
+##Naive Bayes
+```{r}
+# Load libraries
+library(tidyverse)
+library(tidymodels)
+library(discrim)
+library(naivebayes)
+library(vroom)
+
+set.seed(123)
+
+# -------------------------------
+# 2. Encode colors numerically
+# -------------------------------
+color_map <- c("clear" = 1/6,
+               "green" = 2/6,
+               "black" = 3/6,
+               "white" = 4/6,
+               "blue"  = 5/6,
+               "blood" = 6/6)
+
+gggTrain <- gggTrain %>% mutate(across(everything(), ~ replace(., . %in% names(color_map), unname(color_map[.])))) 
+
+gggTest <- gggTest %>% mutate(across(everything(), ~ replace(., . %in% names(color_map), unname(color_map[.]))))
+
+
+# Convert target to factor (classification)
+gggTrain$type <- as.factor(gggTrain$type)
+
+# -------------------------------
+# 3. Create Recipe
+# -------------------------------
+my_recipe <- recipe(type ~ ., data = gggTrain) %>% 
+  step_mutate(across(where(is.character), as.factor)) %>% 
+  step_other(all_nominal_predictors(), threshold = 0.001) %>% 
+  step_dummy(all_nominal_predictors()) %>% # replaces step_lencode_mixed()
+  step_normalize(all_numeric_predictors())
+# -------------------------------
+# 4. Model Specification
+# -------------------------------
+nb_model <- 
+  naive_Bayes(Laplace = tune(), smoothness = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("naivebayes")
+
+# -------------------------------
+# 5. Workflow
+# -------------------------------
+nb_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(nb_model)
+
+# -------------------------------
+# 6. Cross-validation and tuning
+# -------------------------------
+folds <- vfold_cv(gggTrain, v = 6, repeats = 1)
+
+tuning_grid <- grid_regular( 
+  Laplace(), 
+  smoothness(), 
+  levels = 5)
+
+
+CV_results <- nb_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = tuning_grid,
+    metrics = metric_set(accuracy)
+  )
+
+bestTune <- select_best(CV_results, metric = "accuracy")
+
+# -------------------------------
+# 7. Finalize model
+# -------------------------------
+final_nbwf <- finalize_workflow(nb_wf, bestTune)
+
+final_fit <- final_nbwf %>%
+  fit(data = gggTrain)
+
+# -------------------------------
+# 8. Predict on test set
+# -------------------------------
+ghoul_predictions <- final_fit %>%
+  predict(new_data = gggTest, type = "class")
+
+ghoul_results <- gggTest %>%
+   # Ensure ID column exists
+  bind_cols(ghoul_predictions)
+
+# -------------------------------
+# 9. Prepare Kaggle submission
+# -------------------------------
+kaggle_submission_ghouls <- ghoul_results %>%
+  select(id, .pred_class) %>%   # Change ".pred_ghoul" to match your label levels
+  rename(type = .pred_class) 
+
+gggFinal <- vroom_write(kaggle_submission_ghouls, file = "./NaiveBayes.csv", delim = ",")
+```
+
+
+```{r}
+# =====================================
+# Ghouls, Goblins, and Ghosts (Naive Bayes)
+# =====================================
+
+library(tidyverse)
+library(tidymodels)
+library(discrim)
+library(naivebayes)
+library(vroom)
+library(patchwork)
+
+set.seed(123)
+
+# -------------------------------
+# 1. Load data
+# -------------------------------
+gggTrain <- vroom("~/Downloads/GGGCompetition/ghouls-goblins-and-ghosts-boo/train.csv")
+gggTest <- vroom("~/Downloads/GGGCompetition/ghouls-goblins-and-ghosts-boo/test.csv")
+gggSample <- vroom("~/Downloads/GGGCompetition/ghouls-goblins-and-ghosts-boo/sample_submission.csv")
+
+# -------------------------------
+# 2. Convert all character columns to factors
+# -------------------------------
+gggTrain <- gggTrain %>%
+  mutate(across(where(is.character), as.factor))
+
+gggTest <- gggTest %>%
+  mutate(across(where(is.character), as.factor))
+
+# Make sure target variable is factor
+gggTrain$type <- as.factor(gggTrain$type)
+
+# -------------------------------
+# 3. Recipe
+# -------------------------------
+my_recipe <- recipe(type ~ ., data = gggTrain) %>%
+  step_log(all_numeric_predictors(), offset = 1) %>%
+  step_other(all_nominal_predictors(), threshold = 0.001) %>%
+  step_integer(all_nominal_predictors(), zero_based = TRUE) %>%
+  step_normalize(all_numeric_predictors())
+
+# -------------------------------
+# 4. Model specification
+# -------------------------------
+nb_model <- naive_Bayes(
+  Laplace = tune(),
+  smoothness = tune()
+) %>%
+  set_mode("classification") %>%
+  set_engine("naivebayes")
+
+# -------------------------------
+# 5. Workflow
+# -------------------------------
+nb_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(nb_model)
+
+# -------------------------------
+# 6. Cross-validation & tuning
+# -------------------------------
+folds <- vfold_cv(gggTrain, v = 10)
+
+tuning_grid <- grid_regular(
+  Laplace(range = c(0, 3)),
+  smoothness(range = c(0.1, 3)),
+  levels = 8
+)
+
+
+CV_results <- nb_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = tuning_grid,
+    metrics = metric_set(accuracy)
+  )
+
+bestTune <- select_best(CV_results, metric = "accuracy")
+
+# -------------------------------
+# 7. Final model
+# -------------------------------
+final_nbwf <- finalize_workflow(nb_wf, bestTune)
+
+final_fit <- final_nbwf %>%
+  fit(data = gggTrain)
+
+# -------------------------------
+# 8. Predict on test set
+# -------------------------------
+ghoul_predictions <- final_fit %>%
+  predict(new_data = gggTest, type = "class")
+
+# -------------------------------
+# 8–9. Prepare Kaggle submission
+# -------------------------------
+test_ids <- gggTest$id
+
+kaggle_submission_ghouls <- tibble(
+  id = test_ids,
+  type = ghoul_predictions$.pred_class
+)
+
+vroom_write(kaggle_submission_ghouls,
+            file = "./NaiveBayes_Submission.csv",
+            delim = ",")
+
+```
+
+## RDA Workflow
+```{r}
+
+my_recipe <- recipe(type ~ ., data = gggTrain) %>%
+  step_other(all_nominal_predictors(), threshold = 0.01) %>%  # more aggressive grouping
+  step_dummy(all_nominal_predictors()) %>%
+  step_YeoJohnson(all_numeric_predictors()) %>%              # handles skew better than log
+  step_zv(all_predictors()) %>%                              # remove zero-variance columns
+  step_normalize(all_numeric_predictors())
+
+
+rda_model <- discrim_regularized(frac_common_cov = tune(), frac_identity = tune()) %>%
+  set_engine("klaR") %>%
+  set_mode("classification")
+
+rda_grid <- grid_regular(frac_common_cov(), frac_identity(), levels = 5)
+
+folds <- vfold_cv(gggTrain, v = 10, repeats = 2, strata = type)
+
+rda_wf <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(rda_model)
+
+rda_tuned <- tune_grid(
+  rda_wf,
+  resamples = folds,
+  grid = rda_grid,
+  metrics = metric_set(accuracy)
+)
+
+best_rda <- select_best(rda_tuned, metric = "accuracy")
+final_rda <- finalize_workflow(rda_wf, best_rda)
+final_rda_fit <- fit(final_rda, gggTrain)
+
+# rda_predictions <- predict(final_rda_fit, gggTest, type = "class")
+# 
+# kaggle_submission_rda <- tibble(
+#   id = gggTest$id,
+#   type = rda_predictions$.pred_class
+# )
+# 
+# vroom_write(kaggle_submission_rda, "RDA_Submission.csv", delim = ",")
+
+
+
+# lda_model <- discrim_linear() %>%
+#   set_engine("MASS") %>%
+#   set_mode("classification")
+# 
+# lda_wf <- workflow() %>%
+#   add_recipe(my_recipe) %>%
+#   add_model(lda_model)
+# 
+# lda_fit <- fit(lda_wf, gggTrain)
+# 
+# lda_predictions <- predict(lda_fit, new_data = gggTest, type = "class")
+# 
+# kaggle_submission_lda <- tibble(
+#   id = gggTest$id,
+#   type = lda_predictions$.pred_class
+# )
+# 
+# vroom_write(kaggle_submission_lda, "LDA_Submission.csv", delim = ",")
+```
+
